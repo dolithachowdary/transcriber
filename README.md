@@ -2,7 +2,7 @@
 ---
 
 
-# 🗣️ Offline Meeting Transcriber with Speaker Diarization
+#  Offline Meeting Transcriber with Speaker Diarization
 
 This is an **offline speech-to-text transcription tool** for meetings and conversations. It uses **OpenAI Whisper** to transcribe audio and identify **who spoke what** using speaker diarization — all running **completely offline**.
 
