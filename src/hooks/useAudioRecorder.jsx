@@ -3,12 +3,12 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useToast } from "@/components/ui/use-toast";
 import { formatTime } from "@/lib/utils";
 import { initializeMediaRecorder, cleanupMediaRecorder } from "@/lib/mediaRecorderUtils";
-import { initializeSpeechRecognition, cleanupSpeechRecognition } from "@/lib/speechRecognitionUtils";
+import { initializeWhisperConnection, setupWhisperAudioStreaming, AudioProcessor } from "@/lib/whisperWebSocket";
 import { initializeAudioVisualization, cleanupAudioVisualization, visualizeAudio } from "@/lib/audioVisualizationUtils";
 import { handleMicrophoneAccess } from "@/lib/audioPermissions";
 import { startTimer, clearTimer } from "@/lib/timerUtils";
 
-const useAudioRecorder = (onTranscriptUpdate) => {
+const useAudioRecorder = (onTranscriptUpdate, onSummaryReceived) => {
   const [isRecording, setIsRecording] = useState(false);
   const [audioData, setAudioData] = useState(null);
   const [recordingTime, setRecordingTime] = useState(0);
@@ -20,9 +20,16 @@ const useAudioRecorder = (onTranscriptUpdate) => {
       setIsPaused(true);
       clearTimer(timerRef);
       cleanupAudioVisualization(animationFrameRef);
+      
+      // Pause audio streaming to Whisper server by stopping the audio processor
+      if (audioProcessorRef.current) {
+        audioProcessorRef.current.cleanup();
+        audioProcessorRef.current = null;
+      }
+      
       toast({
         title: "Recording paused",
-        description: "Your recording is paused.",
+        description: "Your recording is paused. Audio streaming to transcription server has been paused.",
       });
     }
   };
@@ -42,9 +49,27 @@ const useAudioRecorder = (onTranscriptUpdate) => {
         setWaveformData,
         animationFrameRef
       );
+      
+      // Resume audio streaming to Whisper server without reconnecting
+      if (audioStreamRef.current && whisperClientRef.current) {
+        // Use the same setup function as in start recording for consistency
+        setupWhisperAudioStreaming(audioStreamRef.current, whisperClientRef.current)
+          .then(audioProcessor => {
+            audioProcessorRef.current = audioProcessor;
+          })
+          .catch(error => {
+            console.error("Error resuming audio streaming:", error);
+            toast({
+              variant: "destructive",
+              title: "Audio Streaming Error",
+              description: "Failed to resume real-time transcription.",
+            });
+          });
+      }
+      
       toast({
         title: "Recording resumed",
-        description: "Your recording has resumed.",
+        description: "Your recording has resumed. Audio streaming to transcription server has been resumed.",
       });
     }
   };
@@ -55,15 +80,29 @@ const useAudioRecorder = (onTranscriptUpdate) => {
   const timerRef = useRef(null);
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
-  const speechRecognitionRef = useRef(null);
+  const whisperClientRef = useRef(null);
+  const audioProcessorRef = useRef(null);
   const audioStreamRef = useRef(null);
   const audioSourceNodeRef = useRef(null);
+  const lastSegmentsRef = useRef([]); // Track last few segments to prevent duplicates
 
   const { toast } = useToast();
 
   const cleanupResources = useCallback((fullCleanup = true) => {
     clearTimer(timerRef);
-    cleanupSpeechRecognition(speechRecognitionRef);
+    
+    // Cleanup Whisper WebSocket connection
+    if (whisperClientRef.current) {
+      whisperClientRef.current.disconnect();
+      whisperClientRef.current = null;
+    }
+    
+    // Cleanup audio processor
+    if (audioProcessorRef.current) {
+      audioProcessorRef.current.cleanup();
+      audioProcessorRef.current = null;
+    }
+    
     cleanupAudioVisualization(animationFrameRef);
     
     if (audioStreamRef.current) {
@@ -83,9 +122,7 @@ const useAudioRecorder = (onTranscriptUpdate) => {
   const onRecordingStop = useCallback((audioUrl) => {
     setAudioData(audioUrl);
     
-    if (speechRecognitionRef.current) {
-      speechRecognitionRef.current.stop();
-    }
+    // Whisper connection will be cleaned up in handleStopRecording
     toast({
       title: "Recording complete",
       description: `Processing finished for recording of ${formatTime(recordingTime)}.`,
@@ -113,15 +150,64 @@ const useAudioRecorder = (onTranscriptUpdate) => {
         onRecordingStop
       );
       
-      initializeSpeechRecognition(
-        speechRecognitionRef,
+      // Initialize Whisper WebSocket connection
+      whisperClientRef.current = initializeWhisperConnection(
         (transcriptSegment) => {
-            onTranscriptUpdate(prev => [...prev, transcriptSegment]);
+          onTranscriptUpdate(prev => {
+            // Check if segment already exists to prevent duplicates
+            const exists = prev.some(segment => segment.id === transcriptSegment.id);
+            
+            // Additional duplicate check using last segments cache
+            const isRecentDuplicate = lastSegmentsRef.current.some(
+              segment => 
+                segment.text === transcriptSegment.text && 
+                Math.abs(segment.start - transcriptSegment.start) < 1.0 // Within 1 second
+            );
+            
+            if (!exists && !isRecentDuplicate) {
+              // Add to last segments cache (keep last 5 segments)
+              lastSegmentsRef.current = [...lastSegmentsRef.current.slice(-4), transcriptSegment];
+              return [...prev, transcriptSegment];
+            }
+            return prev;
+          });
         },
-        () => recordingTime, 
-        () => isRecording && mediaRecorderRef.current?.stream?.active && audioStreamRef.current?.active,
-        toast
+        (error) => {
+          toast({
+            variant: "destructive",
+            title: "Transcription Error",
+            description: error,
+          });
+        },
+        (isConnected) => {
+          if (!isConnected && isRecording) {
+            toast({
+              variant: "destructive",
+              title: "Connection Lost",
+              description: "Lost connection to transcription server. Trying to reconnect...",
+            });
+          }
+        },
+        (summary) => {
+          // Handle summary received from WebSocket
+          // This will be passed up to the parent component
+          if (onSummaryReceived) {
+            onSummaryReceived(summary);
+          }
+        }
       );
+
+      // Setup real-time audio streaming to Whisper
+      try {
+        audioProcessorRef.current = await setupWhisperAudioStreaming(stream, whisperClientRef.current);
+      } catch (error) {
+        console.error("Error setting up audio streaming:", error);
+        toast({
+          variant: "destructive",
+          title: "Audio Streaming Error",
+          description: "Failed to setup real-time transcription. Recording will continue without transcription.",
+        });
+      }
 
       mediaRecorderRef.current.start();
       setIsRecording(true);
@@ -132,7 +218,7 @@ const useAudioRecorder = (onTranscriptUpdate) => {
       
       toast({
         title: "Recording started",
-        description: "Your meeting is now being recorded and transcribed.",
+        description: "Your meeting is now being recorded and transcribed with Whisper.",
       });
 
     } catch (error) {
@@ -154,9 +240,25 @@ const useAudioRecorder = (onTranscriptUpdate) => {
       clearTimer(timerRef);
       cleanupAudioVisualization(animationFrameRef);
       
-      if (speechRecognitionRef.current) {
-         speechRecognitionRef.current.stop();
+      // Send stop command to WebSocket to notify server
+      if (whisperClientRef.current) {
+        whisperClientRef.current.sendStopCommand();
       }
+      
+      // Cleanup Whisper connection
+      if (whisperClientRef.current) {
+        whisperClientRef.current.disconnect();
+        whisperClientRef.current = null;
+      }
+      
+      // Cleanup audio processor
+      if (audioProcessorRef.current) {
+        audioProcessorRef.current.cleanup();
+        audioProcessorRef.current = null;
+      }
+      
+      // Clear last segments cache
+      lastSegmentsRef.current = [];
       
       if (audioStreamRef.current) {
         audioStreamRef.current.getTracks().forEach(track => track.stop());
@@ -167,7 +269,7 @@ const useAudioRecorder = (onTranscriptUpdate) => {
 
       toast({
         title: "Recording stopped",
-        description: `Recording of ${formatTime(recordingTime)} processing.`,
+        description: `Recording of ${formatTime(recordingTime)} processed with Whisper.`,
       });
     }
   };
@@ -178,6 +280,7 @@ const useAudioRecorder = (onTranscriptUpdate) => {
     setRecordingTime(0);
     setWaveformData(Array(50).fill(5));
     onTranscriptUpdate([]);
+    lastSegmentsRef.current = []; // Clear last segments cache
     cleanupResources(false);
     toast({
       title: "Recording deleted",

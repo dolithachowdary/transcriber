@@ -1,13 +1,27 @@
 
 import { formatTime } from '@/lib/utils';
+import { initializeOfflineSpeechRecognition, startOfflineRecognition, stopOfflineRecognition } from './offlineSpeechRecognition';
 
 export const initializeSpeechRecognition = (speechRecognitionRef, onTranscriptSegment, getRecordingTime, getIsStreamActive, toast) => {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  
+  // Try offline recognition if web speech API is not available
   if (!SpeechRecognition) {
+    const offlineRecognizer = initializeOfflineSpeechRecognition(onTranscriptSegment, getRecordingTime, toast);
+    if (offlineRecognizer) {
+      speechRecognitionRef.current = {
+        offlineMode: true,
+        recognizer: offlineRecognizer,
+        start: () => startOfflineRecognition(offlineRecognizer),
+        stop: () => stopOfflineRecognition(offlineRecognizer)
+      };
+      return;
+    }
+    
     toast({
       variant: "destructive",
       title: "Speech Recognition Not Supported",
-      description: "Your browser does not support speech recognition. Try Chrome or Edge.",
+      description: "Neither online nor offline speech recognition is available.",
     });
     return;
   }
@@ -85,13 +99,17 @@ export const initializeSpeechRecognition = (speechRecognitionRef, onTranscriptSe
 
 export const cleanupSpeechRecognition = (speechRecognitionRef) => {
   if (speechRecognitionRef.current) {
-    speechRecognitionRef.current.onresult = null;
-    speechRecognitionRef.current.onerror = null;
-    speechRecognitionRef.current.onend = null;
-    try {
+    if (speechRecognitionRef.current.offlineMode) {
+      stopOfflineRecognition(speechRecognitionRef.current.recognizer);
+    } else {
+      speechRecognitionRef.current.onresult = null;
+      speechRecognitionRef.current.onerror = null;
+      speechRecognitionRef.current.onend = null;
+      try {
         speechRecognitionRef.current.stop();
-    } catch(e) {
+      } catch(e) {
         console.warn("Error stopping speech recognition during cleanup:", e);
+      }
     }
     speechRecognitionRef.current = null;
   }

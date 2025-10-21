@@ -19,15 +19,15 @@ const InfoDialog = ({ open, onOpenChange }) => {
       title: "Audio Recording",
       description: "Record your meetings with high-quality audio capture.",
     },
-    {
-      icon: <Users className="h-8 w-8 text-purple-500" />,
-      title: "Speaker Identification",
-      description: "Basic speaker labeling for transcribed segments.",
-    },
+    // {
+    //   icon: <Users className="h-8 w-8 text-purple-500" />,
+    //   title: "Speaker Identification",
+    //   description: "Basic speaker labeling for transcribed segments.",
+    // },
     {
       icon: <FileText className="h-8 w-8 text-pink-500" />,
       title: "Text Transcription",
-      description: "Convert speech to text transcripts in real-time using browser capabilities.",
+      description: "Convert speech to text transcripts in real-time using whisper.",
     },
   ];
 

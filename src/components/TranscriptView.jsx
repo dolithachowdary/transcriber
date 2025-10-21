@@ -1,13 +1,37 @@
 
-import React, { useRef, useEffect } from "react";
+import React, { useRef, useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { User, Clock, Download, Copy, MessageSquare as MessageSquareText } from 'lucide-react';
+import { User, Clock, Download, Copy, MessageSquare as MessageSquareText, FileText } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/use-toast";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 
-const TranscriptView = ({ transcript }) => {
+const TranscriptView = ({ transcript, recordingStopped, summary: propSummary, clearSummary }) => {
+  const [isSummaryOpen, setIsSummaryOpen] = useState(false);
+  const [summary, setSummary] = useState("");
+
   const transcriptRef = useRef(null);
   const { toast } = useToast();
+  
+  // Update local summary when propSummary changes
+  useEffect(() => {
+    if (propSummary) {
+      setSummary(propSummary);
+    }
+  }, [propSummary]);
+  
+  // Clear local summary when dialog is closed
+  useEffect(() => {
+    if (!isSummaryOpen && propSummary) {
+      clearSummary();
+    }
+  }, [isSummaryOpen, propSummary, clearSummary]);
 
   useEffect(() => {
     if (transcriptRef.current && transcript.length > 0) {
@@ -107,6 +131,17 @@ const TranscriptView = ({ transcript }) => {
             <Copy className="h-4 w-4 mr-2" />
             Copy
           </Button>
+          {recordingStopped && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setIsSummaryOpen(true)}
+              className="shadow-sm border-gray-600 hover:bg-gray-700 hover:border-gray-500 transition-colors text-gray-300 bg-yellow-500/20 border-yellow-600/50 hover:border-yellow-500"
+            >
+              <FileText className="h-4 w-4 mr-2" />
+              Summarize 
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"
@@ -120,7 +155,10 @@ const TranscriptView = ({ transcript }) => {
         </div>
       </div>
 
-      <div className="flex-grow transcript-container pr-2 space-y-4 overflow-y-auto">
+      <div
+        ref={transcriptRef}
+        className="flex-grow transcript-container pr-2 space-y-4 overflow-y-auto"
+      >
         {transcript.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center text-gray-400">
             <motion.div
@@ -162,7 +200,70 @@ const TranscriptView = ({ transcript }) => {
           </AnimatePresence>
         )}
       </div>
-      <div ref={transcriptRef} />
+      
+      {/* Summary Dialog */}
+      <Dialog open={isSummaryOpen} onOpenChange={setIsSummaryOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Transcript Summary [BETA] </DialogTitle>
+          </DialogHeader>
+          <div className="py-4">
+            <pre className="whitespace-pre-wrap text-sm text-gray-300">{summary}</pre>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                navigator.clipboard.writeText(summary).then(
+                  () => {
+                    toast({
+                      title: "Copied to clipboard",
+                      description: "The summary has been copied to your clipboard.",
+                    });
+                  },
+                  (err) => {
+                    console.error("Could not copy text: ", err);
+                    toast({
+                      variant: "destructive",
+                      title: "Copy failed",
+                      description: "Failed to copy the summary to clipboard.",
+                    });
+                  }
+                );
+              }}
+              className="shadow-sm border-gray-600 hover:bg-gray-700 hover:border-gray-500 transition-colors text-gray-300"
+            >
+              <Copy className="h-4 w-4 mr-2" />
+              Copy
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                const blob = new Blob([summary], { type: "text/plain" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `meeting-summary-${new Date().toISOString()}.txt`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+
+                toast({
+                  title: "Summary downloaded",
+                  description: "Your summary has been downloaded as a text file.",
+                });
+              }}
+              className="shadow-sm border-gray-600 hover:bg-gray-700 hover:border-gray-500 transition-colors text-gray-300"
+            >
+              <Download className="h-4 w-4 mr-2" />
+              Download
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </motion.div>
   );
 };
